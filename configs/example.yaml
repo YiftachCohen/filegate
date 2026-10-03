@@ -1,0 +1,19 @@
+# Example override: only what differs from filegate/default.yaml.
+# filegate --config configs/example.yaml scan /path/to/repo --out decisions.jsonl
+
+models_dir: /opt/filegate/models     # pre-fetched, read-only in production
+
+backend: nano                        # regex | nano | systemone | head
+
+# systemone:
+#   base_url: http://decision-svc.internal:8000   # your own Jev-compatible server (Clef-flash, Kev, opendecider serve)
+
+policy:
+  low_risk_route: cheap              # keep low-risk files on a cheaper model instead of skipping them
+
+excludes:                            # paste your scanner's real exclude list here
+  dirs: [node_modules, vendor, dist, build, third_party]
+
+cost:                                # measure these from your scanner's usage logs
+  overhead_tokens: 3000
+  output_tokens: 1000

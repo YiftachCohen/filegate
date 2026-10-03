@@ -1,0 +1,92 @@
+# filegate default configuration. Copy it, edit it, pass it with --config.
+# Every path is relative to the config file unless absolute.
+
+models_dir: ./models          # filled by `filegate fetch-models`; nothing is downloaded at scan time
+
+# ---------------------------------------------------------------------------
+# Excludes: what you already never scan. Replace with your scanner's real list.
+excludes:
+  dirs: [node_modules, bower_components, vendor, dist, build, target, out, .next, coverage, __pycache__, .venv, venv]
+  extensions: [.png, .jpg, .jpeg, .gif, .ico, .svg, .webp, .bmp, .tiff, .woff, .woff2, .ttf, .eot, .otf,
+               .mp3, .mp4, .wav, .ogg, .webm, .mov, .avi, .zip, .gz, .tgz, .bz2, .xz, .7z, .rar, .jar, .war,
+               .pdf, .map, .snap, .lock]
+  names: [package-lock.json, yarn.lock, pnpm-lock.yaml, go.sum, Cargo.lock, poetry.lock, composer.lock,
+          Gemfile.lock, Pipfile.lock, npm-shrinkwrap.json]
+  suffixes: [.min.js, .min.css, .bundle.js]
+
+# ---------------------------------------------------------------------------
+# Narrow fact questions, per file kind. Each fact has a model question (`ask`)
+# and a deterministic fallback (`regex`). Ask about things visible in the file,
+# never "is this vulnerable?" — generic risk questions score at chance.
+facts:
+  test:
+    auth:    {ask: "Does this code exercise authentication, authorization, sessions, permissions or access control?",
+              regex: 'auth|login|logout|session|permission|\brole\b|admin|\bacl\b|csrf|password|access[_ ]?control|forbidden|unauthori[sz]ed'}
+    input:   {ask: "Does this code pass crafted or malicious input, such as injection strings, ../ paths, or oversized or malformed data?",
+              regex: '\.\./|<script|%00|drop table|evil|malicious|payload|inject|traversal|xss|ssrf|redos|overflow'}
+    real_io: {ask: "Does this code run real servers, network requests, shell commands or file system writes, rather than only mocks?",
+              regex: 'requests\.(get|post)|fetch\(|http\.(get|post|request)|urlopen|socket|subprocess|os\.system|exec\(|child_process|listen\(|createServer|writeFile'}
+    harness: {ask: "Is this a fuzzing harness, or a helper module that production code imports?",
+              regex: 'fuzz|LLVMFuzzerTestOneInput|hypothesis|atheris'}
+  config:
+    exec:    {ask: "Does this file define commands, scripts or hooks that get executed, such as build steps, install scripts or CI jobs?",
+              regex: '(?m)^\s*(scripts|run|command|cmd|entrypoint|hooks?|afterSign|afterPack|beforeBuild|postinstall|preinstall|prepare|before_script|script)\s*:'}
+    security: {ask: "Does this file set security options such as permissions, authentication, CORS, TLS, sandboxing or allowed hosts?",
+              regex: 'cors|\btls\b|\bssl\b|permission|auth|allowed_?hosts|content-security-policy|\bcsp\b|sandbox|nodeIntegration|contextIsolation|insecure|webSecurity'}
+    secret:  {ask: "Does this file contain credentials, tokens, private keys or connection strings?",
+              regex: 'AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*["''][^"''\s]{6,}'}
+    evaluated: {ask: "Does this file contain SQL queries, templates or expressions that are evaluated at runtime?",
+              regex: '\b(select|insert|update|delete)\b.+\b(from|into|set)\b|\{\{|\$\{|<%'}
+  js:
+    ui_only: {ask: "Does this file only render user interface (components, layout, styling) without handling data from users or servers?",
+              regex: null, role: discount}       # lowers risk instead of raising it
+    network: {ask: "Does this code make network requests or call backend APIs?",
+              regex: '\bfetch\(|axios|XMLHttpRequest|\$\.ajax|WebSocket|EventSource|graphql|useQuery|useMutation'}
+    auth:    {ask: "Does this code handle authentication, sessions, tokens, cookies or user permissions?",
+              regex: 'auth|login|logout|session|token|jwt|cookie|password|permission|csrf|oauth'}
+    raw_html: {ask: "Does this code insert raw HTML, build URLs or redirects from variables, or evaluate code dynamically?",
+              regex: 'innerHTML|outerHTML|dangerouslySetInnerHTML|v-html|insertAdjacentHTML|document\.write|eval\(|new Function|location\.(href|assign|replace)|window\.open|\.href\s*=|postMessage|\.html\('}
+    input:   {ask: "Does this code read user input, such as forms, URL parameters or messages, and pass it to other code?",
+              regex: 'URLSearchParams|location\.(search|hash)|req\.(body|query|params|headers)|FormData|addEventListener\([''"]message'}
+    server:  {ask: "Does this code run on a server, such as request handlers, database access, file system or shell commands?",
+              regex: 'require\([''"](child_process|fs|http|https|net|vm)[''"]\)|from [''"](node:)?(child_process|fs|http|https|net|vm)[''"]|express|koa|fastify|router\.(get|post)|res\.(send|redirect|json)|\.query\(|sequelize|knex|prisma|mongoose|spawn\('}
+
+# ---------------------------------------------------------------------------
+# Which backend answers the facts.
+#   regex      deterministic, free, no models (default)
+#   nano       OpenDecider-Nano on CPU, from models_dir
+#   systemone  any self-hosted Jev-compatible /v1/systemone endpoint (Clef-flash, Kev, opendecider serve...)
+#   head       a classifier trained on your own labels (`filegate train`); falls back to regex if absent
+backend: regex
+nano:
+  path: opendecider-nano      # under models_dir
+  max_len: 512
+systemone:
+  base_url: http://127.0.0.1:8000
+  timeout_s: 30
+head:
+  path: head.joblib           # under models_dir
+
+# ---------------------------------------------------------------------------
+# Routing. Files get one of: excluded | skip | cheap | full.
+policy:
+  low_risk_route: cheap       # cheap (route to the cheaper model) or skip. Prefer cheap: a mistake costs a weaker scan, not a missed finding.
+  gate_kinds: [test, config, js]   # which kinds the facts/head decide; everything else at level 5 goes to full
+  # A gated file goes to `full` when its risk score >= threshold.
+  # regex backend: any matching fact -> 1.0, so 0.5 means "any fact".
+  # nano defaults were fit on a public proxy (SastBench, 8 test/config + 24 JS findings): recalibrate with `filegate eval`.
+  thresholds:
+    regex:     {test: 0.5,  config: 0.5,  js: 0.5}
+    nano:      {test: 0.37, config: 0.37, js: 0.26}
+    systemone: {test: 0.5,  config: 0.5,  js: 0.5}
+    head:      {test: 0.5,  config: 0.5,  js: 0.5}
+
+# ---------------------------------------------------------------------------
+# Cost model ($ per million tokens). Defaults: Opus 4.8 full, Haiku 4.5 cheap.
+cost:
+  full:  {input_per_mtok: 5.0, output_per_mtok: 25.0}
+  cheap: {input_per_mtok: 1.0, output_per_mtok: 5.0}
+  overhead_tokens: 3000       # system prompt + instructions per call (measure from your usage logs)
+  output_tokens: 1000         # answer + thinking per file (measure from your usage logs)
+  bytes_per_token: 4
+  max_file_tokens: 200000

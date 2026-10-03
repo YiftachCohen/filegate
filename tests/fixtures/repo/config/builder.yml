@@ -1,0 +1,4 @@
+build:
+  afterSign: ./scripts/notarize.js
+  scripts:
+    postinstall: node setup.js
